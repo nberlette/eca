@@ -1,0 +1,11 @@
+.other
+*.pem
+.cache
+*.log
+*.workspace
+*.code-workspace
+*.*-workspace
+.npm
+.yarn
+.pnpm
+.env.local
