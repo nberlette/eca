@@ -1,38 +1,25 @@
 /** 
  * ECA: Ethanol Content Analyzer
  *
- * Converts a 50-150hz flexfuel frequency to 0-5volt analog signal (PWM or DAC)
- *  -> See README.md
+ * Converts a 50-150hz flexfuel frequency to 0-5volt analog signal (PWM or DAC),
+ * with optional CAN bus output for automotive integration.
+ *  -> See README.md for full documentation.
  * ----------------------------------------------------------------------------
- *    MIT © 2021 Nicholas Berlette <https://github.com/nberlette/eca>
+ *   MIT (c) 2021-2026 Nicholas Berlette <https://github.com/nberlette/eca>
  */
 
-#define VERSION           "1.0.1"
+#include "eca_config.h"
 
-#define PIN_INPUT_SENSOR  10
-#define PIN_OUTPUT_PWM    9
-
-#define ENABLE_SERIAL     1
-#define SERIAL_BAUDRATE   9600
-
-#define ENABLE_DAC_OUT    1
-#define ENABLE_PWM_OUT    1
-
-#define PWM_MULTIPLIER    255
-#define DAC_MULTIPLIER    4095
-
-#ifdef ENABLE_DAC_OUT
+#if ECA_ENABLE_DAC_OUT
   #include <MCP4725.h>
   MCP4725 dac;
 #endif
 
-const int voltageMin    = 0.5;
-const int voltageMax    = 4.5;
-
-const int eContentAdder = 0;
-const int eContentFixed = 0;
-
-const int refreshDelay      = 1000;
+#if ECA_ENABLE_CAN
+  #include "eca_can.h"
+  EcaCan ecaCan;
+  EcaStatus ecaStatus = ECA_STATUS_UNKNOWN;
+#endif
 
 volatile uint16_t countTick  = 0;
 volatile uint16_t revTick;
@@ -56,18 +43,26 @@ ISR(TIMER1_OVF_vect)
 
 void setup()
 {
-  if (ENABLE_SERIAL == 1) 
+  if (ECA_ENABLE_SERIAL == 1) 
   {
-    Serial.begin(SERIAL_BAUDRATE);
+    Serial.begin(ECA_SERIAL_BAUDRATE);
   }
   pinMode(PIN_INPUT_SENSOR, INPUT);
 
-  if (defined(ENABLE_PWM_OUT) && ENABLE_PWM_OUT == 1)
-  {
-    setPwmFrequency(PIN_OUTPUT_PWM, 1); 
-  }
+#if ECA_ENABLE_PWM_OUT
+  setPwmFrequency(PIN_OUTPUT_PWM, 1); 
+#endif
+
   setupTimer();
-  setVoltage(0.1, true);
+  setVoltage(ECA_ERROR_V_DISCONNECTED, true);
+
+#if ECA_ENABLE_CAN
+  if (!ecaCan.begin()) {
+    if (ECA_ENABLE_SERIAL == 1) {
+      Serial.println(F("CAN init failed"));
+    }
+  }
+#endif
 }
 
 void setupTimer ()
@@ -83,23 +78,22 @@ void setupTimer ()
 
 void setVoltage (double volts, bool init = false) 
 {
-  const int maxVolts = 5.0;
+  const int maxVolts = ECA_VOLTAGE_RAIL;
 
-  if (defined(ENABLE_PWM_OUT) && ENABLE_PWM_OUT == 1)
-  {
-    if (init) {
-      pinMode(PIN_OUTPUT_PWM, OUTPUT);
-      TCCR1B = TCCR1B & 0b11111000 | 0x01;
-    }
-    analogWrite(PIN_OUTPUT_PWM, int((PWM_MULTIPLIER * (volts / maxVolts))));
+#if ECA_ENABLE_PWM_OUT
+  if (init) {
+    pinMode(PIN_OUTPUT_PWM, OUTPUT);
+    TCCR1B = TCCR1B & 0b11111000 | 0x01;
   }
-  if (defined(ENABLE_DAC_OUT) && ENABLE_DAC_OUT == 1)
-  {
-    if (init) { 
-      dac.begin(0x60);
-    }
-    dac.setVoltage(int(DAC_MULTIPLIER * (volts / maxVolts)), false);
+  analogWrite(PIN_OUTPUT_PWM, int((PWM_MULTIPLIER * (volts / maxVolts))));
+#endif
+
+#if ECA_ENABLE_DAC_OUT
+  if (init) { 
+    dac.begin(ECA_DAC_I2C_ADDR);
   }
+  dac.setVoltage(int(DAC_MULTIPLIER * (volts / maxVolts)), false);
+#endif
 }
 
 int getTempC (unsigned long highTime, unsigned long lowTime) 
@@ -123,15 +117,24 @@ int getEthanol (unsigned long pulseTime)
   {
     if (pulseTime == 0) 
     { // sensor disconnected / short circuit
-      setVoltage(0.1);
+      setVoltage(ECA_ERROR_V_DISCONNECTED);
+#if ECA_ENABLE_CAN
+      ecaStatus = ECA_STATUS_DISCONNECTED;
+#endif
     } 
     else if (pulseTime >= 20100) 
     { // contaminated fuel supply
-      setVoltage(4.8);
+      setVoltage(ECA_ERROR_V_CONTAMINATED);
+#if ECA_ENABLE_CAN
+      ecaStatus = ECA_STATUS_CONTAMINATED;
+#endif
     }
     else if ((pulseTime <= 6400) && (pulseTime >= 1)) 
     { // high water content in fuel
-      setVoltage(4.9);
+      setVoltage(ECA_ERROR_V_HIGH_WATER);
+#if ECA_ENABLE_CAN
+      ecaStatus = ECA_STATUS_HIGH_WATER;
+#endif
     }
     if (countTick < 2) 
     {
@@ -140,13 +143,17 @@ int getEthanol (unsigned long pulseTime)
 		return;
 	}
 
-  int eContent = frequency - (50 - eContentAdder);
+#if ECA_ENABLE_CAN
+  ecaStatus = ECA_STATUS_OK;
+#endif
+
+  int eContent = frequency - (50 - ECA_ECONTENT_ADDER);
   return clamp(eContent, 0, 100);
 }
 
 float setVoltageFromEthanol (int ethanol)
 {
-  float desiredVoltage = mapf(ethanol, 0, 100, voltageMin, voltageMax);
+  float desiredVoltage = mapf(ethanol, 0, 100, ECA_VOLTAGE_MIN, ECA_VOLTAGE_MAX);
   setVoltage(desiredVoltage, false);
   return desiredVoltage;
 }
@@ -215,17 +222,30 @@ void loop ()
   unsigned long pulseTime = highTime + lowTime;
 	float frequency = float(1000000 / pulseTime);
 
-  eContent = getEthanol(pulseTime);
-  setVoltageFromEthanol(eContent);
+  int eContent = getEthanol(pulseTime);
+  float outputVoltage = setVoltageFromEthanol(eContent);
 
-  tempC = getTempC(highTime, lowTime);
-	tempF = cToF(tempC);
+  int tempC = getTempC(highTime, lowTime);
+	int tempF = cToF(tempC);
 
-  if (ENABLE_SERIAL == 1) 
-  {
-    Serial << "Ethanol: " << eContent << "\%  •  Fuel Temp: " << tempC << "°C (" << tempF << "°F)" << endl;
-    Serial.println();
+#if ECA_ENABLE_CAN
+  if (ecaCan.ready()) {
+    uint16_t voltageMv = (uint16_t)(outputVoltage * 1000);
+    ecaCan.send((uint8_t)eContent, frequency, voltageMv,
+                (int8_t)tempC, ecaStatus);
   }
-  delay(refreshDelay);
+#endif
+
+  if (ECA_ENABLE_SERIAL == 1) 
+  {
+    Serial.print(F("Ethanol: "));
+    Serial.print(eContent);
+    Serial.print(F("%  •  Fuel Temp: "));
+    Serial.print(tempC);
+    Serial.print(F("°C ("));
+    Serial.print(tempF);
+    Serial.println(F("°F)"));
+  }
+  delay(ECA_REFRESH_DELAY_MS);
 	countTick = 0;
 }

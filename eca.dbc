@@ -1,0 +1,73 @@
+// ==========================================================================
+//  ECA: Ethanol Content Analyzer — CAN Database (DBC)
+//
+//  Defines the CAN message schema for the ECA firmware's optional CAN
+//  output. Use this file with CAN tools (Vector CANdb++, SavvyCAN,
+//  BusMaster, PCAN, etc.) to decode ECA CAN frames.
+//
+//  Default Arbitration ID: 0x0EC (236 decimal)
+//  Bus speed: 500 kbps (typical automotive)
+//
+//  MIT (c) 2021-2026 Nicholas Berlette <https://github.com/nberlette/eca>
+// ==========================================================================
+
+VERSION ""
+
+NS_ :
+
+BS_:
+
+BU_: ECA
+
+// --------------------------------------------------------------------------
+//  Message: ECA_Data  (ID 0x0EC, 8 bytes, sent by node ECA)
+// --------------------------------------------------------------------------
+BO_ 236 ECA_Data: 8 ECA
+  // Ethanol content percentage (0-100%)
+  SG_ EthanolContent : 0|8@1+ (1,0) [0|100] "%" Vector__XXX
+
+  // Sensor input frequency (0.1 Hz resolution, e.g. 500 = 50.0 Hz)
+  SG_ SensorFrequency : 8|16@1+ (0.1,0) [0|6553.5] "Hz" Vector__XXX
+
+  // Analog output voltage in millivolts
+  SG_ OutputVoltage : 24|16@1+ (1,0) [0|5000] "mV" Vector__XXX
+
+  // Fuel temperature in degrees Celsius (offset -40, so 0 = -40°C)
+  SG_ FuelTemperature : 40|8@1+ (1,-40) [-40|215] "degC" Vector__XXX
+
+  // Enumerated status / error code
+  //   0x00 = OK (normal valid reading)
+  //   0x01 = Disconnected (sensor fault, analog: 0.10V)
+  //   0x02 = Contaminated (freq < 50 Hz, analog: 4.80V)
+  //   0x03 = High Water (freq > 150 Hz, analog: 4.90V)
+  //   0xFF = Unknown / initializing
+  SG_ StatusCode : 48|8@1+ (1,0) [0|255] "" Vector__XXX
+
+  // Status bit flags (individual fault indicators)
+  //   bit 0 (0x01): Sensor OK
+  //   bit 1 (0x02): Sensor disconnected
+  //   bit 2 (0x04): Contaminated fuel
+  //   bit 3 (0x08): High water content
+  //   bit 7 (0x80): Any error present
+  SG_ StatusFlags : 56|8@1+ (1,0) [0|255] "" Vector__XXX
+
+// --------------------------------------------------------------------------
+//  Value descriptions for StatusCode signal
+// --------------------------------------------------------------------------
+VAL_ 236 StatusCode
+  0 "OK"
+  1 "Disconnected"
+  2 "Contaminated"
+  3 "HighWater"
+  255 "Unknown" ;
+
+// --------------------------------------------------------------------------
+//  Signal comments
+// --------------------------------------------------------------------------
+CM_ SG_ 236 EthanolContent "Ethanol content percentage derived from FlexFuel sensor frequency. 50 Hz = 0%, 150 Hz = 100%.";
+CM_ SG_ 236 SensorFrequency "Raw FlexFuel sensor input frequency with 0.1 Hz resolution. Transmitted as Hz * 10 (big-endian). Valid range: 50.0-150.0 Hz.";
+CM_ SG_ 236 OutputVoltage "Analog output voltage in millivolts. Normal range: 500-4500 mV. Error voltages: 100 mV (disconnected), 4800 mV (contaminated), 4900 mV (high water).";
+CM_ SG_ 236 FuelTemperature "Fuel temperature in degrees Celsius. Encoded with +40 offset so byte value 0 = -40 degC. Derived from FlexFuel sensor duty cycle.";
+CM_ SG_ 236 StatusCode "Enumerated status/error code. 0x00=OK, 0x01=Disconnected (analog 0.10V), 0x02=Contaminated (analog 4.80V), 0x03=HighWater (analog 4.90V), 0xFF=Unknown.";
+CM_ SG_ 236 StatusFlags "Bit field for fault conditions. bit0=SensorOK, bit1=Disconnected, bit2=Contaminated, bit3=HighWater, bit7=AnyError. Multiple bits may be set.";
+CM_ BO_ 236 "ECA ethanol content analyzer output. Transmits ethanol percentage, sensor frequency, output voltage, fuel temperature, and status/error information. Default arbitration ID 0x0EC (236).";
